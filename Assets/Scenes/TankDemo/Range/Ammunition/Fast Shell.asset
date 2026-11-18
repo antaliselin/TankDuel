@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 192e60cb26e93b040a87858d6e845598, type: 3}
+  m_Name: Fast Shell
+  m_EditorClassIdentifier: 
+  startingRounds: 12
+  reloadSeconds: 1.1
+  damage: 18
+  muzzleSpeed: 380
+  gravityScale: 1
+  flightLifetime: 2.5
