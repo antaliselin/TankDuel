@@ -13,6 +13,7 @@ public sealed class T34_85DemoController : MonoBehaviour
     [Header("Scene")]
     [SerializeField] private CinemachineBrain cameraBrain;
     [SerializeField] private Renderer drivingSurface;
+    [SerializeField] private TankMudTerrain mudTerrain;
 
     [Header("Driving")]
     [SerializeField, Min(0f)] private float forwardSpeed = 6f;
@@ -120,7 +121,7 @@ public sealed class T34_85DemoController : MonoBehaviour
         Vector3 heading = Quaternion.AngleAxis(yaw * 0.5f, Vector3.up) * transform.forward;
         Vector3 start = transform.position;
         Vector3 travel = heading * (speed * deltaTime);
-        Bounds bounds = drivingSurface.bounds;
+        Bounds bounds = mudTerrain != null ? mudTerrain.GroundBounds : drivingSurface.bounds;
         float fraction = Mathf.Min(
             AvailableFraction(start.x, travel.x, bounds.min.x + edgeClearance, bounds.max.x - edgeClearance),
             AvailableFraction(start.z, travel.z, bounds.min.z + edgeClearance, bounds.max.z - edgeClearance));
@@ -133,6 +134,13 @@ public sealed class T34_85DemoController : MonoBehaviour
         float turningSpeed = yawSpeed * Mathf.Deg2Rad * trackSpacing * 0.5f;
         rig.LeftTrackSpeed = centerSpeed + turningSpeed;
         rig.RightTrackSpeed = centerSpeed - turningSpeed;
+        if (mudTerrain != null)
+        {
+            float ground = mudTerrain.UpdateTracks(transform, trackSpacing, rig.LeftTrackSpeed, rig.RightTrackSpeed, deltaTime);
+            Vector3 position = transform.position;
+            position.y = Mathf.MoveTowards(position.y, ground, deltaTime);
+            transform.position = position;
+        }
 
         float longitudinalAcceleration = (centerSpeed - previousCenterSpeed) / deltaTime;
         previousCenterSpeed = centerSpeed;
@@ -183,7 +191,8 @@ public sealed class T34_85DemoController : MonoBehaviour
             }
             else
             {
-                var groundPlane = new Plane(Vector3.up, drivingSurface.bounds.center);
+                float height = mudTerrain != null ? mudTerrain.RestHeight : drivingSurface.bounds.center.y;
+                var groundPlane = new Plane(Vector3.up, Vector3.up * height);
                 showAimReticles = groundPlane.Raycast(ray, out float distance);
                 if (showAimReticles)
                     aimPoint = ray.GetPoint(distance);
