@@ -14,6 +14,12 @@ public sealed class T34_85DemoController : MonoBehaviour
     [SerializeField] private CinemachineBrain cameraBrain;
     [SerializeField] private Renderer drivingSurface;
     [SerializeField] private TankMudTerrain mudTerrain;
+    [SerializeField] private TankWallVisibility wallVisibility;
+
+    [Header("Camera Look-Ahead")]
+    [SerializeField] private CinemachineVirtualCamera overheadCamera;
+    [SerializeField, Min(0f)] private float maximumLookAhead = 10f;
+    [SerializeField, Min(0.01f)] private float lookAheadSmoothTime = 0.16f;
 
     [Header("Driving")]
     [SerializeField, Min(0f)] private float forwardSpeed = 6f;
@@ -47,6 +53,11 @@ public sealed class T34_85DemoController : MonoBehaviour
 
     private T34_85Rig rig;
     private Camera aimCamera;
+    private CinemachineTransposer cameraBody;
+    private Vector3 baseCameraOffset;
+    private Vector3 cameraLookOffset;
+    private Vector3 cameraLookVelocity;
+    private bool lookingAround;
     private TankDemoAmmoRack ammoRack;
     private float speed;
     private float yawSpeed;
@@ -69,6 +80,12 @@ public sealed class T34_85DemoController : MonoBehaviour
     {
         rig = GetComponent<T34_85Rig>();
         aimCamera = cameraBrain.GetComponent<Camera>();
+        if (overheadCamera != null)
+        {
+            cameraBody = overheadCamera.GetCinemachineComponent<CinemachineTransposer>();
+            baseCameraOffset = cameraBody.m_FollowOffset;
+        }
+
         ammoRack = new TankDemoAmmoRack(ammunition);
         aimPoint = rig.Muzzle.position + rig.Muzzle.forward * 30f;
         targetGunElevation = rig.GunElevation;
@@ -80,6 +97,7 @@ public sealed class T34_85DemoController : MonoBehaviour
         int throttle = (Input.GetKey(KeyCode.W) ? 1 : 0) - (Input.GetKey(KeyCode.S) ? 1 : 0);
         int steer = (Input.GetKey(KeyCode.D) ? 1 : 0) - (Input.GetKey(KeyCode.A) ? 1 : 0);
         Vector2 cursor = Input.mousePosition;
+        lookingAround = Input.GetMouseButton(1) && aimCamera.pixelRect.Contains(cursor);
         Step(throttle, steer, cursor, Time.deltaTime);
         if (Time.deltaTime > 0f)
             ammoRack.Cycle((Input.GetKeyDown(KeyCode.E) ? 1 : 0) - (Input.GetKeyDown(KeyCode.Q) ? 1 : 0));
@@ -106,6 +124,8 @@ public sealed class T34_85DemoController : MonoBehaviour
             return;
 
         MoveTank(throttle, steer, deltaTime);
+        UpdateWallVisibility();
+        UpdateLookAhead(cursor, deltaTime);
         cameraBrain.ManualUpdate();
         ammoRack.Tick(deltaTime);
         AimAtCursor(cursor, deltaTime);
@@ -118,20 +138,30 @@ public sealed class T34_85DemoController : MonoBehaviour
         yawSpeed = Mathf.MoveTowards(yawSpeed, steer * turnSpeed, turnAcceleration * deltaTime);
 
         float yaw = yawSpeed * deltaTime;
-        Vector3 heading = Quaternion.AngleAxis(yaw * 0.5f, Vector3.up) * transform.forward;
         Vector3 start = transform.position;
+        Quaternion rotation = Quaternion.AngleAxis(yaw, Vector3.up) * transform.rotation;
+        if (wallVisibility != null && wallVisibility.BlocksHull(start, rotation))
+        {
+            yaw = 0f;
+            rotation = transform.rotation;
+        }
+
+        Vector3 heading = Quaternion.AngleAxis(yaw * 0.5f, Vector3.up) * transform.forward;
         Vector3 travel = heading * (speed * deltaTime);
-        Bounds bounds = mudTerrain != null ? mudTerrain.GroundBounds : drivingSurface.bounds;
+        Bounds bounds = GroundBounds;
         float fraction = Mathf.Min(
             AvailableFraction(start.x, travel.x, bounds.min.x + edgeClearance, bounds.max.x - edgeClearance),
             AvailableFraction(start.z, travel.z, bounds.min.z + edgeClearance, bounds.max.z - edgeClearance));
+        float wallFraction = wallVisibility != null ? wallVisibility.TravelFraction(start, rotation, travel) : 1f;
+        fraction = Mathf.Min(fraction, wallFraction);
 
-        Quaternion rotation = Quaternion.AngleAxis(yaw, Vector3.up) * transform.rotation;
         transform.SetPositionAndRotation(start + travel * fraction, rotation);
 
         // In a right turn the left track covers the longer arc.
         float centerSpeed = speed * fraction;
-        float turningSpeed = yawSpeed * Mathf.Deg2Rad * trackSpacing * 0.5f;
+        if (wallFraction < 1f)
+            speed = centerSpeed;
+        float turningSpeed = yaw / deltaTime * Mathf.Deg2Rad * trackSpacing * 0.5f;
         rig.LeftTrackSpeed = centerSpeed + turningSpeed;
         rig.RightTrackSpeed = centerSpeed - turningSpeed;
         if (mudTerrain != null)
@@ -148,6 +178,48 @@ public sealed class T34_85DemoController : MonoBehaviour
         float targetPitch = maximumBodyPitch * pitchRatio;
         rig.HullPitch = Mathf.SmoothDamp(rig.HullPitch, targetPitch, ref bodyPitchVelocity,
             bodyPitchResponse, Mathf.Infinity, deltaTime);
+    }
+
+    private Bounds GroundBounds => mudTerrain != null ? mudTerrain.GroundBounds : drivingSurface.bounds;
+    private float GroundHeight => mudTerrain != null ? mudTerrain.RestHeight : drivingSurface.bounds.center.y;
+
+    private void UpdateWallVisibility()
+    {
+        if (wallVisibility == null)
+            return;
+
+        Vector3 eye = transform.position + Vector3.up * 1.55f;
+        wallVisibility.UpdateFog(eye, GroundBounds, GroundHeight);
+        foreach (TankDemoTarget target in practiceTargets)
+            if (target != null)
+                target.SetObserved(wallVisibility.CanSee(eye, target.AimPoint));
+    }
+
+    private void UpdateLookAhead(Vector2 cursor, float deltaTime)
+    {
+        if (cameraBody == null)
+            return;
+
+        Vector3 desired = Vector3.zero;
+        Rect view = aimCamera.pixelRect;
+        if (lookingAround && view.width > 0f && view.height > 0f)
+        {
+            Vector2 pointer = cursor - view.center;
+            Vector2 input = Vector2.ClampMagnitude(new Vector2(pointer.x * 2f / view.width,
+                pointer.y * 2f / view.height), 1f);
+            Vector3 screenRight = Vector3.ProjectOnPlane(aimCamera.transform.right, Vector3.up).normalized;
+            Vector3 screenUp = Vector3.ProjectOnPlane(aimCamera.transform.up, Vector3.up).normalized;
+            desired = (screenRight * input.x + screenUp * input.y) * maximumLookAhead;
+        }
+
+        cameraLookOffset = Vector3.SmoothDamp(cameraLookOffset, desired, ref cameraLookVelocity,
+            lookAheadSmoothTime, Mathf.Infinity, deltaTime);
+        if (!lookingAround && cameraLookOffset.sqrMagnitude < 0.0001f)
+        {
+            cameraLookOffset = Vector3.zero;
+            cameraLookVelocity = Vector3.zero;
+        }
+        cameraBody.m_FollowOffset = baseCameraOffset + cameraLookOffset;
     }
 
     private static float AvailableFraction(float position, float travel, float minimum, float maximum)
@@ -185,13 +257,14 @@ public sealed class T34_85DemoController : MonoBehaviour
         {
             Ray ray = aimCamera.ScreenPointToRay(cursor);
             if (Physics.Raycast(ray, out RaycastHit hit, aimCamera.farClipPlane,
-                    Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                    Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore) &&
+                (!hit.collider.TryGetComponent(out TankDemoTarget target) || target.IsVisible))
             {
                 aimPoint = hit.point;
             }
             else
             {
-                float height = mudTerrain != null ? mudTerrain.RestHeight : drivingSurface.bounds.center.y;
+                float height = GroundHeight;
                 var groundPlane = new Plane(Vector3.up, Vector3.up * height);
                 showAimReticles = groundPlane.Raycast(ray, out float distance);
                 if (showAimReticles)
@@ -237,7 +310,7 @@ public sealed class T34_85DemoController : MonoBehaviour
         GUI.DrawTexture(panel, Texture2D.whiteTexture);
         GUI.color = Color.white;
         GUI.Label(new Rect(panel.x + 13f, panel.y + 5f, panel.width - 26f, 20f),
-            "W/S  Drive     A/D  Steer     Mouse  Aim     LMB  Fire");
+            "W/S Drive   A/D Steer   LMB Fire   Hold RMB Look");
         GUI.Label(new Rect(panel.x + 13f, panel.y + 23f, 84f, 20f), $"Hits  {hits}");
         GUI.Label(new Rect(panel.x + 104f, panel.y + 23f, 138f, 20f), "+   Mouse point");
         GUI.color = ShotReticleColor;
@@ -373,7 +446,7 @@ public sealed class T34_85DemoController : MonoBehaviour
         Texture2D fill = Texture2D.whiteTexture;
         foreach (TankDemoTarget target in practiceTargets)
         {
-            if (target == null || !target.IsAlive)
+            if (target == null || !target.IsAlive || !target.IsVisible)
                 continue;
 
             Vector3 screen = aimCamera.WorldToScreenPoint(target.HealthBarPosition);

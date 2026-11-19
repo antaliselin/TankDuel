@@ -20,11 +20,21 @@ public sealed class TankDemoTarget : MonoBehaviour
     public int MaxHealth => maxHealth;
     public int CurrentHealth { get; private set; }
     public bool IsAlive => CurrentHealth > 0;
+    public bool IsVisible { get; private set; } = true;
 
     private void Awake()
     {
         hitCollider = GetComponent<BoxCollider>();
         Restore();
+    }
+
+    public void SetObserved(bool observed)
+    {
+        if (IsVisible == observed)
+            return;
+
+        IsVisible = observed;
+        visuals.SetActive(IsAlive && observed);
     }
 
     public bool TakeDamage(int damage)
@@ -76,7 +86,7 @@ public sealed class TankDemoTarget : MonoBehaviour
         CurrentHealth = maxHealth;
         hitTimeRemaining = 0f;
         hitIndicator.SetActive(false);
-        visuals.SetActive(true);
+        visuals.SetActive(IsVisible);
         hitCollider.enabled = true;
     }
 }
